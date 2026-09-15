@@ -162,6 +162,19 @@
   .history-item.selected { background: var(--asphalt); color: #fff; }
   .history-item.selected .sub, .history-item.selected .driver { color: #C8C6C0; }
   li.empty.small { padding: 20px 22px; font-size: 13px; }
+
+  .coverage-row { padding: 0 12px 12px; }
+  .coverage-btn {
+    width: 100%; font: inherit; font-size: 13px; font-weight: 600; color: #fff;
+    background: var(--asphalt); border: 0; border-radius: 8px; padding: 10px 12px; cursor: pointer;
+  }
+  .coverage-btn:hover { opacity: 0.9; }
+  .coverage-btn[disabled] { opacity: 0.4; cursor: default; }
+  .coverage-legend {
+    display: flex; align-items: center; gap: 14px; padding: 10px 12px; font-size: 12px; color: var(--muted);
+  }
+  .coverage-legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .coverage-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
 </style>
 </head>
 <body>
@@ -180,6 +193,14 @@
     <input type="date" id="filterDate" aria-label="Filtrar por dia">
     <select id="filterCity" aria-label="Filtrar por cidade"><option value="">Todas as cidades</option></select>
     <button type="button" id="filterToday">Hoje</button>
+  </div>
+  <div class="coverage-row" id="coverageRow" hidden>
+    <button type="button" class="coverage-btn" id="coverageBtn" disabled>Selecione uma cidade pra ver cobertura</button>
+  </div>
+  <div class="coverage-legend" id="coverageLegend" hidden>
+    <span><i style="background:#2E7D3299"></i> coberto</span>
+    <span><i style="background:#C6282866"></i> sem cobertura</span>
+    <button type="button" class="coverage-btn" id="coverageClose" style="width:auto;background:none;color:var(--asphalt);border:1px solid var(--line);padding:4px 10px">Fechar</button>
   </div>
   <ul id="list"></ul>
 </aside>
@@ -230,6 +251,11 @@ const $historyFilters = document.getElementById('historyFilters');
 const $filterDate = document.getElementById('filterDate');
 const $filterCity = document.getElementById('filterCity');
 const $filterToday = document.getElementById('filterToday');
+const $coverageRow = document.getElementById('coverageRow');
+const $coverageBtn = document.getElementById('coverageBtn');
+const $coverageLegend = document.getElementById('coverageLegend');
+const $coverageClose = document.getElementById('coverageClose');
+let coverageLayer = null;   // grupo de retângulos da grade de cobertura
 const $modalOverlay = document.getElementById('modalOverlay');
 const $modalBody = document.getElementById('modalBody');
 const $modalClose = document.getElementById('modalClose');
@@ -423,7 +449,8 @@ function switchTab(tab) {
   $tabHistory.classList.toggle('active', tab === 'history');
   $tabDrivers.classList.toggle('active', tab === 'drivers');
   $historyFilters.hidden = tab !== 'history';
-  if (tab !== 'history') clearHistoryLayer();
+  $coverageRow.hidden = tab !== 'history';
+  if (tab !== 'history') { clearHistoryLayer(); clearCoverageLayer(); }
   if (tab === 'live') render();
   else if (tab === 'history') loadHistory();
   else renderDriversList();
@@ -432,14 +459,25 @@ $tabLive.onclick = () => switchTab('live');
 $tabHistory.onclick = () => switchTab('history');
 $tabDrivers.onclick = () => switchTab('drivers');
 
-$filterDate.onchange = () => { historyFilters.date = $filterDate.value; renderHistoryList(); };
-$filterCity.onchange = () => { historyFilters.city = $filterCity.value; renderHistoryList(); };
+function updateCoverageButton() {
+  $coverageBtn.disabled = !historyFilters.city;
+  $coverageBtn.textContent = historyFilters.city
+    ? `Ver cobertura de ${historyFilters.city}${historyFilters.date ? ' em ' + fmtDate(historyFilters.date + 'T00:00:00') : ''}`
+    : 'Selecione uma cidade pra ver cobertura';
+}
+
+$filterDate.onchange = () => { historyFilters.date = $filterDate.value; renderHistoryList(); updateCoverageButton(); };
+$filterCity.onchange = () => { historyFilters.city = $filterCity.value; renderHistoryList(); updateCoverageButton(); };
 $filterToday.onclick = () => {
   const today = new Date().toISOString().slice(0, 10);
   $filterDate.value = historyFilters.date === today ? '' : today;
   historyFilters.date = $filterDate.value;
   renderHistoryList();
+  updateCoverageButton();
 };
+$coverageBtn.onclick = showCoverage;
+$coverageClose.onclick = clearCoverageLayer;
+updateCoverageButton();
 
 function renderDriversList() {
   if (!allDrivers.length) {
@@ -602,6 +640,106 @@ async function resolveCitiesQueue(shifts) {
     await new Promise((r) => setTimeout(r, 1100));
   }
   cityQueueRunning = false;
+}
+
+// ---------- Cobertura por cidade: grade de quadras, marca o que foi (não foi) visitado ----------
+
+const COVERAGE_CELL_M = 130; // lado de cada quadrado da grade, em metros (~1 quarteirão)
+const COVERAGE_PADDING_M = 250; // margem ao redor da área coberta, pra mostrar vizinhança não visitada
+
+function clearCoverageLayer() {
+  if (!coverageLayer) return;
+  coverageLayer.remove();
+  coverageLayer = null;
+  $coverageLegend.hidden = true;
+}
+
+async function showCoverage() {
+  if (!historyFilters.city) return;
+  clearHistoryLayer();
+  clearCoverageLayer();
+  $coverageBtn.disabled = true;
+  const originalLabel = $coverageBtn.textContent;
+  $coverageBtn.textContent = 'Calculando cobertura…';
+
+  try {
+    let shiftsQuery = sb.from('shifts').select('id').eq('city', historyFilters.city).not('ended_at', 'is', null);
+    if (historyFilters.date) {
+      shiftsQuery = shiftsQuery.gte('started_at', `${historyFilters.date}T00:00:00`).lte('started_at', `${historyFilters.date}T23:59:59.999`);
+    }
+    const { data: shiftRows, error: shiftsErr } = await shiftsQuery.limit(500);
+    if (shiftsErr) throw shiftsErr;
+    if (!shiftRows?.length) { alert('Nenhuma rota encontrada com esse filtro.'); return; }
+
+    const ids = shiftRows.map((s) => s.id);
+    const points = [];
+    const CHUNK = 100; // evita mandar uma URL gigante com IDs demais de uma vez
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const { data: pts, error: ptsErr } = await sb
+        .from('locations').select('lat, lng').in('shift_id', ids.slice(i, i + CHUNK)).limit(20000);
+      if (ptsErr) throw ptsErr;
+      points.push(...(pts ?? []));
+    }
+    if (!points.length) { alert('Essas rotas não têm pontos de GPS gravados.'); return; }
+
+    renderCoverageGrid(points);
+  } catch (e) {
+    console.error('Falha ao calcular cobertura', e);
+    alert('Não foi possível calcular a cobertura: ' + e.message);
+  } finally {
+    $coverageBtn.disabled = !historyFilters.city;
+    $coverageBtn.textContent = originalLabel;
+  }
+}
+
+function renderCoverageGrid(points) {
+  const refLat = points[0].lat;
+  const cellLat = COVERAGE_CELL_M / 111320;
+  const cellLng = COVERAGE_CELL_M / (111320 * Math.cos(refLat * Math.PI / 180));
+
+  const covered = new Set();
+  let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+  for (const p of points) {
+    const cy = Math.floor(p.lat / cellLat), cx = Math.floor(p.lng / cellLng);
+    covered.add(`${cy}:${cx}`);
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+    if (p.lng < minLng) minLng = p.lng;
+    if (p.lng > maxLng) maxLng = p.lng;
+  }
+
+  const padLat = COVERAGE_PADDING_M / 111320;
+  const padLng = COVERAGE_PADDING_M / (111320 * Math.cos(refLat * Math.PI / 180));
+  const yMin = Math.floor((minLat - padLat) / cellLat), yMax = Math.floor((maxLat + padLat) / cellLat);
+  const xMin = Math.floor((minLng - padLng) / cellLng), xMax = Math.floor((maxLng + padLng) / cellLng);
+
+  const totalCells = (yMax - yMin + 1) * (xMax - xMin + 1);
+  if (totalCells > 20000) {
+    alert('A área é grande demais pra desenhar a grade (tente filtrar por um dia específico).');
+    return;
+  }
+
+  coverageLayer = L.layerGroup().addTo(map);
+  const renderer = L.canvas();
+  let coveredCount = 0;
+  for (let cy = yMin; cy <= yMax; cy++) {
+    for (let cx = xMin; cx <= xMax; cx++) {
+      const isCovered = covered.has(`${cy}:${cx}`);
+      if (isCovered) coveredCount++;
+      const bounds = [[cy * cellLat, cx * cellLng], [(cy + 1) * cellLat, (cx + 1) * cellLng]];
+      L.rectangle(bounds, {
+        renderer,
+        stroke: false,
+        fillColor: isCovered ? '#2E7D32' : '#C62828',
+        fillOpacity: isCovered ? 0.35 : 0.22,
+      }).addTo(coverageLayer);
+    }
+  }
+
+  $coverageLegend.hidden = false;
+  const pct = Math.round((coveredCount / totalCells) * 100);
+  $coverageLegend.querySelector('span').innerHTML = `<i style="background:#2E7D3299"></i> coberto (${pct}% da área analisada)`;
+  map.fitBounds([[minLat - padLat, minLng - padLng], [maxLat + padLat, maxLng + padLng]], { padding: [40, 40] });
 }
 
 async function openProfile(driverId) {
