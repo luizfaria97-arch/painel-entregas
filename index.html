@@ -163,18 +163,21 @@
   .history-item.selected .sub, .history-item.selected .driver { color: #C8C6C0; }
   li.empty.small { padding: 20px 22px; font-size: 13px; }
 
-  .coverage-row { padding: 0 12px 12px; }
+  .coverage-row { padding: 0 12px 12px; display: flex; gap: 8px; }
+  .coverage-row[hidden] { display: none; }
   .coverage-btn {
-    width: 100%; font: inherit; font-size: 13px; font-weight: 600; color: #fff;
-    background: var(--asphalt); border: 0; border-radius: 8px; padding: 10px 12px; cursor: pointer;
+    flex: 1; font: inherit; font-size: 13px; font-weight: 600; color: #fff;
+    background: var(--asphalt); border: 0; border-radius: 8px; padding: 10px 10px; cursor: pointer;
   }
   .coverage-btn:hover { opacity: 0.9; }
   .coverage-btn[disabled] { opacity: 0.4; cursor: default; }
   .coverage-legend {
-    display: flex; align-items: center; gap: 14px; padding: 10px 12px; font-size: 12px; color: var(--muted);
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 10px 12px; font-size: 12px; color: var(--muted);
   }
+  .coverage-legend[hidden] { display: none; }
   .coverage-legend span { display: inline-flex; align-items: center; gap: 5px; }
   .coverage-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .coverage-legend .close-btn { width: auto; flex: 0; background: none; color: var(--asphalt); border: 1px solid var(--line); padding: 4px 10px; font-weight: 600; border-radius: 8px; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -195,13 +198,15 @@
     <button type="button" id="filterToday">Hoje</button>
   </div>
   <div class="coverage-row" id="coverageRow" hidden>
-    <button type="button" class="coverage-btn" id="coverageBtn" disabled>Selecione uma cidade pra ver cobertura</button>
+    <button type="button" class="coverage-btn" id="coverageBtn" disabled>Ver cobertura</button>
+    <button type="button" class="coverage-btn" id="byDriverBtn" disabled>Ver por colaborador</button>
   </div>
   <div class="coverage-legend" id="coverageLegend" hidden>
     <span><i style="background:#2E7D3299"></i> coberto</span>
     <span><i style="background:#C6282866"></i> sem cobertura</span>
-    <button type="button" class="coverage-btn" id="coverageClose" style="width:auto;background:none;color:var(--asphalt);border:1px solid var(--line);padding:4px 10px">Fechar</button>
+    <button type="button" class="close-btn" id="coverageClose">Fechar</button>
   </div>
+  <div class="coverage-legend" id="driverLegend" hidden></div>
   <ul id="list"></ul>
 </aside>
 <div id="map" role="region" aria-label="Mapa dos entregadores"></div>
@@ -255,7 +260,10 @@ const $coverageRow = document.getElementById('coverageRow');
 const $coverageBtn = document.getElementById('coverageBtn');
 const $coverageLegend = document.getElementById('coverageLegend');
 const $coverageClose = document.getElementById('coverageClose');
-let coverageLayer = null;   // grupo de retângulos da grade de cobertura
+const $byDriverBtn = document.getElementById('byDriverBtn');
+const $driverLegend = document.getElementById('driverLegend');
+let coverageLayer = null;      // grupo de retângulos da grade de cobertura
+let driverRoutesLayer = null;  // grupo de rotas coloridas por colaborador
 const $modalOverlay = document.getElementById('modalOverlay');
 const $modalBody = document.getElementById('modalBody');
 const $modalClose = document.getElementById('modalClose');
@@ -450,7 +458,7 @@ function switchTab(tab) {
   $tabDrivers.classList.toggle('active', tab === 'drivers');
   $historyFilters.hidden = tab !== 'history';
   $coverageRow.hidden = tab !== 'history';
-  if (tab !== 'history') { clearHistoryLayer(); clearCoverageLayer(); }
+  if (tab !== 'history') { clearHistoryLayer(); clearCoverageLayer(); clearDriverRoutesLayer(); }
   if (tab === 'live') render();
   else if (tab === 'history') loadHistory();
   else renderDriversList();
@@ -461,9 +469,9 @@ $tabDrivers.onclick = () => switchTab('drivers');
 
 function updateCoverageButton() {
   $coverageBtn.disabled = !historyFilters.city;
-  $coverageBtn.textContent = historyFilters.city
-    ? `Ver cobertura de ${historyFilters.city}${historyFilters.date ? ' em ' + fmtDate(historyFilters.date + 'T00:00:00') : ''}`
-    : 'Selecione uma cidade pra ver cobertura';
+  $byDriverBtn.disabled = !historyFilters.city;
+  $coverageBtn.textContent = 'Ver cobertura';
+  $byDriverBtn.textContent = 'Ver por colaborador';
 }
 
 $filterDate.onchange = () => { historyFilters.date = $filterDate.value; renderHistoryList(); updateCoverageButton(); };
@@ -476,7 +484,8 @@ $filterToday.onclick = () => {
   updateCoverageButton();
 };
 $coverageBtn.onclick = showCoverage;
-$coverageClose.onclick = clearCoverageLayer;
+$coverageClose.onclick = () => { clearCoverageLayer(); clearDriverRoutesLayer(); };
+$byDriverBtn.onclick = showRoutesByDriver;
 updateCoverageButton();
 
 function renderDriversList() {
@@ -658,6 +667,7 @@ async function showCoverage() {
   if (!historyFilters.city) return;
   clearHistoryLayer();
   clearCoverageLayer();
+  clearDriverRoutesLayer();
   $coverageBtn.disabled = true;
   const originalLabel = $coverageBtn.textContent;
   $coverageBtn.textContent = 'Calculando cobertura…';
@@ -740,6 +750,94 @@ function renderCoverageGrid(points) {
   const pct = Math.round((coveredCount / totalCells) * 100);
   $coverageLegend.querySelector('span').innerHTML = `<i style="background:#2E7D3299"></i> coberto (${pct}% da área analisada)`;
   map.fitBounds([[minLat - padLat, minLng - padLng], [maxLat + padLat, maxLng + padLng]], { padding: [40, 40] });
+}
+
+// ---------- Rotas coloridas por colaborador: todas as rotas de uma cidade/dia de uma vez ----------
+
+const DRIVER_PALETTE = [
+  '#1E88E5', '#FDD835', '#43A047', '#E53935', '#8E24AA', '#FB8C00',
+  '#00ACC1', '#6D4C41', '#D81B60', '#3949AB', '#7CB342', '#F4511E',
+];
+
+function colorForDriver(driverId) {
+  let hash = 0;
+  for (let i = 0; i < driverId.length; i++) hash = (hash * 31 + driverId.charCodeAt(i)) >>> 0;
+  return DRIVER_PALETTE[hash % DRIVER_PALETTE.length];
+}
+
+function clearDriverRoutesLayer() {
+  if (!driverRoutesLayer) return;
+  driverRoutesLayer.remove();
+  driverRoutesLayer = null;
+  $driverLegend.hidden = true;
+  $driverLegend.innerHTML = '';
+}
+
+async function showRoutesByDriver() {
+  if (!historyFilters.city) return;
+  clearHistoryLayer();
+  clearCoverageLayer();
+  clearDriverRoutesLayer();
+  $byDriverBtn.disabled = true;
+  const originalLabel = $byDriverBtn.textContent;
+  $byDriverBtn.textContent = 'Carregando rotas…';
+
+  try {
+    let shiftsQuery = sb.from('shifts')
+      .select('id, distance_km, driver:drivers(id, name)')
+      .eq('city', historyFilters.city).not('ended_at', 'is', null);
+    if (historyFilters.date) {
+      shiftsQuery = shiftsQuery.gte('started_at', `${historyFilters.date}T00:00:00`).lte('started_at', `${historyFilters.date}T23:59:59.999`);
+    }
+    const { data: shiftRows, error: shiftsErr } = await shiftsQuery.limit(300);
+    if (shiftsErr) throw shiftsErr;
+    if (!shiftRows?.length) { alert('Nenhuma rota encontrada com esse filtro.'); return; }
+
+    const ids = shiftRows.map((s) => s.id);
+    const pointsByShift = new Map(ids.map((id) => [id, []]));
+    const CHUNK = 100;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const { data: pts, error: ptsErr } = await sb
+        .from('locations').select('shift_id, lat, lng').in('shift_id', ids.slice(i, i + CHUNK)).order('recorded_at').limit(20000);
+      if (ptsErr) throw ptsErr;
+      for (const p of pts ?? []) pointsByShift.get(p.shift_id)?.push([p.lat, p.lng]);
+    }
+
+    driverRoutesLayer = L.layerGroup().addTo(map);
+    const allLatLngs = [];
+    const kmByDriver = new Map(); // driver_id → { name, km }
+    for (const s of shiftRows) {
+      const latlngs = pointsByShift.get(s.id);
+      if (!latlngs?.length) continue;
+      const driverId = s.driver?.id ?? 'sem-motorista';
+      const driverName = s.driver?.name ?? 'Motorista removido';
+      const color = colorForDriver(driverId);
+      L.polyline(latlngs, { color, weight: 4, opacity: 0.75 })
+        .addTo(driverRoutesLayer)
+        .bindTooltip(driverName, { sticky: true, className: 'label' });
+      allLatLngs.push(...latlngs);
+      const acc = kmByDriver.get(driverId) ?? { name: driverName, km: 0, color };
+      acc.km += Number(s.distance_km) || 0;
+      kmByDriver.set(driverId, acc);
+    }
+
+    if (!allLatLngs.length) { alert('Essas rotas não têm pontos de GPS gravados.'); clearDriverRoutesLayer(); return; }
+
+    $driverLegend.hidden = false;
+    $driverLegend.innerHTML = [...kmByDriver.values()]
+      .sort((a, b) => b.km - a.km)
+      .map((d) => `<span><i style="background:${d.color}"></i> ${d.name} (${d.km.toFixed(1)} km)</span>`)
+      .join('') + '<button type="button" class="close-btn" id="driverLegendClose">Fechar</button>';
+    document.getElementById('driverLegendClose').onclick = clearDriverRoutesLayer;
+
+    map.fitBounds(allLatLngs, { padding: [40, 40] });
+  } catch (e) {
+    console.error('Falha ao carregar rotas por colaborador', e);
+    alert('Não foi possível carregar as rotas: ' + e.message);
+  } finally {
+    $byDriverBtn.disabled = !historyFilters.city;
+    $byDriverBtn.textContent = originalLabel;
+  }
 }
 
 async function openProfile(driverId) {
