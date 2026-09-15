@@ -1,0 +1,770 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Entregas — painel ao vivo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root {
+    --asphalt: #2B2D30;
+    --paper: #F5F3EE;
+    --line: #DED9CE;
+    --orange: #FF6A1F;
+    --caution: #E0A800;
+    --muted: #7A7C80;
+    --rail: 340px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: 'Barlow', system-ui, sans-serif;
+    color: var(--asphalt);
+    background: var(--paper);
+    display: grid;
+    grid-template-columns: var(--rail) 1fr;
+  }
+  aside {
+    display: flex; flex-direction: column;
+    border-right: 1px solid var(--line);
+    height: 100vh; overflow: hidden;
+  }
+  header { padding: 24px 22px 14px; }
+  header h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -0.3px; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+  header p b { color: var(--asphalt); font-weight: 600; }
+  #status { display: inline-flex; align-items: center; gap: 6px; }
+  #status::before {
+    content: ''; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--muted);
+  }
+  #status.live::before { background: var(--orange); }
+
+  ul { list-style: none; margin: 0; padding: 0 12px 16px; overflow-y: auto; flex: 1; }
+  li {
+    display: grid; grid-template-columns: 1fr auto; gap: 2px 12px;
+    padding: 14px 10px; border-radius: 10px; cursor: pointer;
+    border-bottom: 1px solid var(--line);
+  }
+  li:hover, li:focus-visible { background: #EBE7DE; outline: none; }
+  li.selected { background: var(--asphalt); color: #fff; }
+  li.selected .meta { color: #C8C6C0; }
+  .name { font-size: 17px; font-weight: 600; }
+  .km { font-size: 17px; font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
+  .meta { grid-column: 1 / -1; font-size: 13px; color: var(--muted); }
+  .meta.stale { color: var(--caution); font-weight: 600; }
+  li.selected .meta.stale { color: #FFD666; }
+  .empty { padding: 32px 22px; color: var(--muted); font-size: 15px; line-height: 1.5; }
+
+  #map { height: 100vh; }
+  .pin {
+    width: 30px; height: 30px; border-radius: 50% 50% 50% 0;
+    transform: rotate(-45deg); background: var(--orange);
+    border: 3px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,.35);
+  }
+  .pin.stale { background: var(--caution); }
+  .leaflet-tooltip.label {
+    font-family: 'Barlow', sans-serif; font-weight: 600; font-size: 13px;
+    background: var(--asphalt); color: #fff; border: 0; border-radius: 6px;
+    padding: 3px 8px;
+  }
+  .leaflet-tooltip.label::before { display: none; }
+
+  @media (max-width: 760px) {
+    body { grid-template-columns: 1fr; grid-template-rows: 1fr 45vh; }
+    aside { height: auto; border-right: 0; border-top: 1px solid var(--line); order: 2; }
+    #map { height: 100%; order: 1; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    li { transition: background .15s; }
+  }
+
+  .tabs { display: flex; gap: 4px; padding: 0 22px 12px; }
+  .tab {
+    flex: 1; padding: 8px 0; border: 0; border-radius: 8px; cursor: pointer;
+    background: transparent; color: var(--muted); font: inherit; font-weight: 600; font-size: 14px;
+  }
+  .tab.active { background: var(--asphalt); color: #fff; }
+
+  #alerts { padding: 0 12px; }
+  #alerts:empty { display: none; }
+  .alert {
+    display: flex; gap: 8px; align-items: flex-start;
+    padding: 10px 12px; margin: 0 0 8px; border-radius: 10px; font-size: 13px; line-height: 1.35;
+  }
+  .alert b { font-weight: 600; }
+  .alert.warn { background: #FCEFD8; color: #8A5A00; }
+  .alert.info { background: #E7E4DB; color: var(--asphalt); }
+
+  .pin.stopped { background: var(--muted); }
+
+  .profile-btn {
+    grid-column: 1 / -1; justify-self: start; margin-top: 2px;
+    background: none; border: 0; padding: 0; font: inherit; font-size: 12px;
+    font-weight: 600; color: var(--orange); cursor: pointer;
+  }
+  li.selected .profile-btn { color: #FFB088; }
+
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(20, 19, 17, 0.55);
+    display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px;
+  }
+  .modal {
+    background: var(--paper); border-radius: 14px; max-width: 480px; width: 100%;
+    max-height: 86vh; overflow-y: auto; padding: 24px; position: relative;
+    box-shadow: 0 20px 60px rgba(0,0,0,.35);
+  }
+  .modal-close {
+    position: absolute; top: 14px; right: 14px; border: 0; background: var(--line);
+    width: 30px; height: 30px; border-radius: 50%; cursor: pointer; font-size: 15px; color: var(--asphalt);
+  }
+  .profile-name { font-size: 22px; font-weight: 700; margin: 0 0 2px; padding-right: 30px; }
+  .profile-phone { color: var(--muted); font-size: 14px; margin: 0 0 14px; }
+  .wa-btn {
+    display: inline-flex; align-items: center; gap: 8px; background: #25D366; color: #fff;
+    text-decoration: none; padding: 10px 16px; border-radius: 10px; font-weight: 600; font-size: 14px;
+    margin-bottom: 18px;
+  }
+  .stats-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px;
+  }
+  .stat-card { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .stat-card .v { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat-card .l { font-size: 12px; color: var(--muted); }
+  .history-title { font-size: 14px; font-weight: 700; margin: 0 0 8px; }
+  .history-item {
+    display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 10px 8px;
+    border-radius: 8px; cursor: pointer; border-bottom: 1px solid var(--line);
+  }
+  .history-item:hover { background: #EBE7DE; }
+  .history-item .date { font-weight: 600; font-size: 14px; }
+  .history-item .km { font-weight: 700; font-size: 14px; text-align: right; }
+  .history-item .sub { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+  .modal-msg { color: var(--muted); font-size: 14px; line-height: 1.5; }
+
+  .stop-dot { background: #fff; border: 2px solid var(--muted); border-radius: 50%; opacity: 0.9; }
+
+  .filters { display: flex; gap: 8px; padding: 0 12px 12px; }
+  .filters[hidden] { display: none; }
+  .filters select, .filters input[type="date"] {
+    flex: 1; min-width: 0; font: inherit; font-size: 13px; color: var(--asphalt);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: #fff;
+  }
+  .filters button {
+    font: inherit; font-size: 13px; font-weight: 600; color: var(--asphalt);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: #fff; cursor: pointer;
+  }
+  .filters button:hover { background: #EBE7DE; }
+  .history-item .driver { grid-column: 1 / -1; font-size: 13px; font-weight: 600; color: var(--orange); margin-top: 1px; }
+  .history-item.selected { background: var(--asphalt); color: #fff; }
+  .history-item.selected .sub, .history-item.selected .driver { color: #C8C6C0; }
+  li.empty.small { padding: 20px 22px; font-size: 13px; }
+</style>
+</head>
+<body>
+<aside>
+  <header>
+    <h1>Entregas ao vivo</h1>
+    <p><span id="status">Conectando</span> · <b id="count">0</b> em rota</p>
+  </header>
+  <div class="tabs">
+    <button class="tab active" id="tabLive">Ao vivo</button>
+    <button class="tab" id="tabHistory">Histórico</button>
+    <button class="tab" id="tabDrivers">Motoristas</button>
+  </div>
+  <div id="alerts"></div>
+  <div class="filters" id="historyFilters" hidden>
+    <input type="date" id="filterDate" aria-label="Filtrar por dia">
+    <select id="filterCity" aria-label="Filtrar por cidade"><option value="">Todas as cidades</option></select>
+    <button type="button" id="filterToday">Hoje</button>
+  </div>
+  <ul id="list"></ul>
+</aside>
+<div id="map" role="region" aria-label="Mapa dos entregadores"></div>
+
+<div class="modal-overlay" id="modalOverlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true">
+    <button class="modal-close" id="modalClose" aria-label="Fechar">✕</button>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script type="module">
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+// Copie de: Supabase → Project Settings → API
+const SUPABASE_URL = 'https://supabase.ares-ops.tech';
+const SUPABASE_ANON_KEY = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJzdXBhYmFzZSIsImlhdCI6MTc3NTg0NzA2MCwiZXhwIjo0OTMxNTIwNjYwLCJyb2xlIjoiYW5vbiJ9.JX1oLSpoqdvvpPr3Ut2Dof5GwW131PIObFtJqbnoG7M';
+const STALE_AFTER_MS = 3 * 60 * 1000;   // sem GPS há 3 min = destaque em amarelo
+
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const map = L.map('map', { zoomControl: false }).setView([-24.95, -53.46], 12);
+L.control.zoom({ position: 'bottomright' }).addTo(map);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+  attribution: 'Tiles &copy; Esri', maxZoom: 19,
+}).addTo(map);
+
+const state = new Map();   // shift_id → { shift, driver, points[], marker, line }
+let selected = null;
+let activeTab = 'live';    // 'live' | 'history' | 'drivers'
+let allDrivers = [];       // cache de driver_profile_stats
+let historyLayer = null;   // { line, markers[] } — rota histórica aberta (perfil ou aba Histórico)
+let allHistory = [];       // cache de jornadas encerradas (aba Histórico)
+let selectedHistoryId = null;
+let cityQueueRunning = false;
+const citySet = new Set();
+const historyFilters = { date: '', city: '' };
+const $list = document.getElementById('list');
+const $count = document.getElementById('count');
+const $status = document.getElementById('status');
+const $alerts = document.getElementById('alerts');
+const $tabLive = document.getElementById('tabLive');
+const $tabHistory = document.getElementById('tabHistory');
+const $tabDrivers = document.getElementById('tabDrivers');
+const $historyFilters = document.getElementById('historyFilters');
+const $filterDate = document.getElementById('filterDate');
+const $filterCity = document.getElementById('filterCity');
+const $filterToday = document.getElementById('filterToday');
+const $modalOverlay = document.getElementById('modalOverlay');
+const $modalBody = document.getElementById('modalBody');
+const $modalClose = document.getElementById('modalClose');
+
+const STOPPED_AFTER_MIN = 8;   // parado no mesmo lugar por mais disso = alerta
+const STOPPED_RADIUS_M = 35;
+const LONG_SHIFT_MIN = 600;    // 10h em rota sem dar Finish = alerta
+
+function icon(kind) {
+  const cls = kind === 'stale' ? 'stale' : kind === 'stopped' ? 'stopped' : '';
+  return L.divIcon({ className: '', html: `<div class="pin ${cls}"></div>`, iconSize: [30, 30], iconAnchor: [15, 30] });
+}
+
+function fmtAgo(ts) {
+  const s = Math.round((Date.now() - new Date(ts)) / 1000);
+  if (s < 60) return 'agora';
+  if (s < 3600) return `há ${Math.floor(s / 60)} min`;
+  return `há ${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}`;
+}
+function fmtSince(ts) {
+  const m = Math.floor((Date.now() - new Date(ts)) / 60000);
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')} em rota`;
+}
+function haversine(a, b) {
+  const R = 6371, r = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * r, dLng = (b.lng - a.lng) * r;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function distanceKm(points) {
+  let d = 0;
+  for (let i = 1; i < points.length; i++) d += haversine(points[i - 1], points[i]);
+  return d;
+}
+function fmtDate(ts) {
+  return new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+function fmtMin(min) {
+  if (min == null) return '—';
+  const h = Math.floor(min / 60), m = Math.round(min % 60);
+  return h > 0 ? `${h}h${String(m).padStart(2, '0')}` : `${m} min`;
+}
+function waLink(phone) {
+  let digits = (phone || '').replace(/\D/g, '');
+  if (!digits.startsWith('55')) digits = '55' + digits;
+  return `https://wa.me/${digits}`;
+}
+// Detecta se os últimos pontos de uma jornada estão parados no mesmo lugar (raio pequeno)
+function detectCurrentStopMinutes(points) {
+  if (points.length < 2) return 0;
+  const last = points.at(-1);
+  let i = points.length - 1;
+  while (i > 0 && haversine(last, points[i - 1]) * 1000 <= STOPPED_RADIUS_M) i--;
+  const clusterStart = points[i];
+  if (clusterStart === last) return 0;
+  return Math.round((new Date(last.recorded_at) - new Date(clusterStart.recorded_at)) / 60000);
+}
+
+async function loadActive() {
+  const { data: shifts, error } = await sb
+    .from('shifts')
+    .select('id, started_at, driver:drivers(id, name, phone)')
+    .is('ended_at', null)
+    .order('started_at');
+  if (error) { showError('Não foi possível ler o banco', error); return; }
+
+  for (const s of shifts) {
+    const { data: pts } = await sb
+      .from('locations')
+      .select('lat, lng, recorded_at')
+      .eq('shift_id', s.id)
+      .order('recorded_at');
+    upsertShift(s, pts ?? []);
+  }
+  render();
+  fitAll();
+}
+
+function upsertShift(shift, points) {
+  let e = state.get(shift.id);
+  if (!e) {
+    e = { shift, driver: shift.driver, points: [], marker: null, line: L.polyline([], { color: '#FF6A1F', weight: 4, opacity: 0.8 }).addTo(map) };
+    state.set(shift.id, e);
+  }
+  for (const p of points) addPoint(e, p, false);
+}
+
+function addPoint(e, p, redraw = true) {
+  e.points.push(p);
+  const ll = [p.lat, p.lng];
+  e.line.addLatLng(ll);
+  if (!e.marker) {
+    e.marker = L.marker(ll, { icon: icon('normal') }).addTo(map)
+      .bindTooltip(e.driver.name.split(' ')[0], { permanent: true, direction: 'top', offset: [0, -28], className: 'label' })
+      .on('click', () => select(e.shift.id));
+  } else {
+    e.marker.setLatLng(ll);
+  }
+  if (redraw) render();
+}
+
+function removeShift(id) {
+  const e = state.get(id);
+  if (!e) return;
+  e.marker?.remove(); e.line.remove();
+  state.delete(id);
+  if (selected === id) selected = null;
+  render();
+}
+
+function select(id) {
+  selected = selected === id ? null : id;
+  const e = state.get(id);
+  if (selected && e?.points.length) map.flyTo([e.points.at(-1).lat, e.points.at(-1).lng], 15);
+  render();
+}
+
+function fitAll() {
+  const lls = [...state.values()].flatMap(e => e.points.map(p => [p.lat, p.lng]));
+  if (lls.length) map.fitBounds(lls, { padding: [60, 60], maxZoom: 15 });
+}
+
+function showError(title, err) {
+  console.error(title, err);
+  const detail = err?.message || err?.hint || JSON.stringify(err);
+  $list.innerHTML = `<li class="empty"><b>${title}.</b><br>${detail}<br><br>Confira se o schema.sql foi executado e se a URL/chave estão corretas.</li>`;
+}
+
+function render() {
+  const entries = [...state.values()];
+  $count.textContent = entries.length;
+  renderAlerts(entries);
+  if (activeTab === 'live') renderLiveList(entries);
+}
+
+function renderLiveList(entries) {
+  if (!entries.length) {
+    $list.innerHTML = '<li class="empty">Nenhum entregador em rota. Quando alguém tocar em Start no app, ele aparece aqui.</li>';
+    return;
+  }
+  $list.innerHTML = '';
+  for (const e of entries) {
+    const last = e.points.at(-1);
+    const staleMin = last ? (Date.now() - new Date(last.recorded_at)) / 60000 : Infinity;
+    const stale = staleMin > STALE_AFTER_MS / 60000;
+    const stopMin = !stale ? detectCurrentStopMinutes(e.points) : 0;
+    const stopped = !stale && stopMin >= STOPPED_AFTER_MIN;
+    e.marker?.setIcon(icon(stale ? 'stale' : stopped ? 'stopped' : 'normal'));
+    const li = document.createElement('li');
+    li.tabIndex = 0;
+    li.className = e.shift.id === selected ? 'selected' : '';
+    li.innerHTML = `
+      <span class="name">${e.driver.name}</span>
+      <span class="km">${distanceKm(e.points).toFixed(1)} km</span>
+      <span class="meta ${stale ? 'stale' : ''}">
+        ${fmtSince(e.shift.started_at)} · GPS ${last ? fmtAgo(last.recorded_at) : 'sem sinal'}${stopped ? ` · parado há ${stopMin} min` : ''}
+      </span>
+      <button class="profile-btn" type="button">Ver perfil ▸</button>`;
+    li.onclick = () => select(e.shift.id);
+    li.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); select(e.shift.id); } };
+    li.querySelector('.profile-btn').onclick = (ev) => { ev.stopPropagation(); openProfile(e.driver.id); };
+    $list.appendChild(li);
+  }
+}
+
+function renderAlerts(entries) {
+  const now = Date.now();
+  const items = [];
+  for (const e of entries) {
+    const last = e.points.at(-1);
+    const staleMin = last ? (now - new Date(last.recorded_at)) / 60000 : Infinity;
+    if (staleMin > STALE_AFTER_MS / 60000) {
+      items.push({ sev: 'warn', icon: '📡', text: `<b>${e.driver.name}</b> está sem sinal de GPS há ${Math.floor(staleMin)} min` });
+    } else {
+      const stopMin = detectCurrentStopMinutes(e.points);
+      if (stopMin >= STOPPED_AFTER_MIN) {
+        items.push({ sev: 'info', icon: '⏱️', text: `<b>${e.driver.name}</b> está parado no mesmo local há ${stopMin} min` });
+      }
+    }
+    const shiftMin = (now - new Date(e.shift.started_at)) / 60000;
+    if (shiftMin > LONG_SHIFT_MIN) {
+      items.push({ sev: 'warn', icon: '⚠️', text: `<b>${e.driver.name}</b> está em jornada há mais de ${fmtMin(LONG_SHIFT_MIN)} — será que esqueceu de encerrar?` });
+    }
+  }
+  $alerts.innerHTML = items.map((a) => `<div class="alert ${a.sev}">${a.icon} ${a.text}</div>`).join('');
+}
+
+function switchTab(tab) {
+  activeTab = tab;
+  $tabLive.classList.toggle('active', tab === 'live');
+  $tabHistory.classList.toggle('active', tab === 'history');
+  $tabDrivers.classList.toggle('active', tab === 'drivers');
+  $historyFilters.hidden = tab !== 'history';
+  if (tab !== 'history') clearHistoryLayer();
+  if (tab === 'live') render();
+  else if (tab === 'history') loadHistory();
+  else renderDriversList();
+}
+$tabLive.onclick = () => switchTab('live');
+$tabHistory.onclick = () => switchTab('history');
+$tabDrivers.onclick = () => switchTab('drivers');
+
+$filterDate.onchange = () => { historyFilters.date = $filterDate.value; renderHistoryList(); };
+$filterCity.onchange = () => { historyFilters.city = $filterCity.value; renderHistoryList(); };
+$filterToday.onclick = () => {
+  const today = new Date().toISOString().slice(0, 10);
+  $filterDate.value = historyFilters.date === today ? '' : today;
+  historyFilters.date = $filterDate.value;
+  renderHistoryList();
+};
+
+function renderDriversList() {
+  if (!allDrivers.length) {
+    $list.innerHTML = '<li class="empty">Nenhum motorista cadastrado ainda.</li>';
+    return;
+  }
+  $list.innerHTML = '';
+  for (const d of allDrivers) {
+    const li = document.createElement('li');
+    li.tabIndex = 0;
+    li.innerHTML = `
+      <span class="name">${d.name}</span>
+      <span class="km">${Number(d.total_km).toFixed(1)} km</span>
+      <span class="meta">${d.days_worked} dia(s) trabalhado(s) · ${d.total_shifts} jornada(s)</span>`;
+    li.onclick = () => openProfile(d.driver_id);
+    li.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openProfile(d.driver_id); } };
+    $list.appendChild(li);
+  }
+}
+
+async function loadDrivers() {
+  const { data, error } = await sb.from('driver_profile_stats').select('*').order('name');
+  if (error) { console.warn('Não foi possível carregar motoristas:', error.message); return; }
+  allDrivers = data ?? [];
+  if (activeTab === 'drivers') renderDriversList();
+}
+
+function clearHistoryLayer() {
+  if (!historyLayer) return;
+  historyLayer.line.remove();
+  historyLayer.markers.forEach((m) => m.remove());
+  historyLayer = null;
+  selectedHistoryId = null;
+}
+
+// ---------- Aba Histórico: rotas passadas, filtráveis por dia e cidade ----------
+
+async function loadHistory() {
+  const { data, error } = await sb
+    .from('shifts')
+    .select('id, started_at, ended_at, distance_km, duration_min, city, driver:drivers(id, name, phone)')
+    .not('ended_at', 'is', null)
+    .order('started_at', { ascending: false })
+    .limit(500);
+  if (error) {
+    if (activeTab === 'history') {
+      const hint = /column .*(duration_min|city|distance_km)/.test(error.message)
+        ? '<br><br>Rode <code>supabase/migration_02_perfil_rotas.sql</code> e <code>supabase/migration_03_cidade.sql</code> no SQL Editor do Supabase para habilitar o histórico.'
+        : '';
+      $list.innerHTML = `<li class="empty">Não foi possível carregar o histórico.<br>${error.message}${hint}</li>`;
+    }
+    return;
+  }
+  allHistory = data ?? [];
+  allHistory.forEach((s) => { if (s.city) citySet.add(s.city); });
+  renderCityFilterOptions();
+  if (activeTab === 'history') renderHistoryList();
+  resolveCitiesQueue(allHistory);
+}
+
+function renderCityFilterOptions() {
+  const current = $filterCity.value;
+  const cities = [...citySet].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  $filterCity.innerHTML = '<option value="">Todas as cidades</option>' +
+    cities.map((c) => `<option value="${c}">${c}</option>`).join('');
+  $filterCity.value = cities.includes(current) ? current : '';
+}
+
+function renderHistoryList() {
+  let rows = allHistory;
+  if (historyFilters.date) {
+    rows = rows.filter((s) => {
+      const d = new Date(s.started_at);
+      const local = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      return local === historyFilters.date;
+    });
+  }
+  if (historyFilters.city) rows = rows.filter((s) => s.city === historyFilters.city);
+
+  if (!allHistory.length) {
+    $list.innerHTML = '<li class="empty">Nenhuma jornada encerrada ainda.</li>';
+    return;
+  }
+  if (!rows.length) {
+    $list.innerHTML = '<li class="empty small">Nenhuma rota encontrada com esse filtro.</li>';
+    return;
+  }
+  $list.innerHTML = '';
+  for (const s of rows) {
+    const item = document.createElement('li');
+    item.tabIndex = 0;
+    item.className = 'history-item' + (s.id === selectedHistoryId ? ' selected' : '');
+    item.innerHTML = `
+      <span class="date">${fmtDate(s.started_at)}${s.city ? ' · ' + s.city : ''}</span>
+      <span class="km">${s.distance_km != null ? Number(s.distance_km).toFixed(1) + ' km' : '—'}</span>
+      <span class="driver">${s.driver?.name ?? 'Motorista removido'}</span>
+      <span class="sub">${fmtMin(s.duration_min)}${s.city ? '' : ' · detectando cidade…'}</span>`;
+    item.onclick = () => showHistoryRoute(s);
+    item.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); showHistoryRoute(s); } };
+    $list.appendChild(item);
+  }
+}
+
+async function showHistoryRoute(shift) {
+  if (selectedHistoryId === shift.id) { clearHistoryLayer(); renderHistoryList(); return; }
+  clearHistoryLayer();
+  const [{ data: pts, error: ptsErr }, { data: stops }] = await Promise.all([
+    sb.from('locations').select('lat, lng, recorded_at').eq('shift_id', shift.id).order('recorded_at'),
+    sb.from('stops').select('lat, lng, duration_min').eq('shift_id', shift.id),
+  ]);
+  if (ptsErr || !pts?.length) { alert('Não foi possível carregar essa rota.'); return; }
+  const latlngs = pts.map((p) => [p.lat, p.lng]);
+  const line = L.polyline(latlngs, { color: '#2B6CB0', weight: 5, opacity: 0.85 })
+    .addTo(map)
+    .bindTooltip(shift.driver?.name ?? 'Motorista removido', { sticky: true, className: 'label' });
+  const markers = [
+    L.circleMarker(latlngs[0], { radius: 7, color: '#2E7D32', fillColor: '#2E7D32', fillOpacity: 1 }).addTo(map).bindTooltip('Início'),
+    L.circleMarker(latlngs.at(-1), { radius: 7, color: '#C62828', fillColor: '#C62828', fillOpacity: 1 }).addTo(map).bindTooltip('Fim'),
+  ];
+  for (const s of stops ?? []) {
+    markers.push(
+      L.circleMarker([s.lat, s.lng], { radius: 6 + Math.min(s.duration_min / 5, 10), className: 'stop-dot' })
+        .addTo(map).bindTooltip(`Parado ${fmtMin(s.duration_min)}`)
+    );
+  }
+  historyLayer = { line, markers };
+  selectedHistoryId = shift.id;
+  renderHistoryList();
+  map.fitBounds(latlngs, { padding: [60, 60], maxZoom: 16 });
+}
+
+// Detecta a cidade de uma jornada pelo primeiro ponto de GPS (Nominatim/OSM) e
+// grava no banco pra não precisar buscar de novo. Roda devagar (1 por segundo)
+// pra respeitar o limite de uso gratuito do serviço.
+async function resolveCityForShift(shift) {
+  const { data: pt } = await sb
+    .from('locations').select('lat, lng').eq('shift_id', shift.id).order('recorded_at').limit(1).maybeSingle();
+  if (!pt) return;
+  try {
+    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${pt.lat}&lon=${pt.lng}&zoom=10&addressdetails=1`);
+    const data = await res.json();
+    const city = data?.address?.city || data?.address?.town || data?.address?.village || data?.address?.municipality || null;
+    if (!city) return;
+    const { error } = await sb.from('shifts').update({ city }).eq('id', shift.id);
+    if (!error) { shift.city = city; citySet.add(city); }
+  } catch (e) {
+    console.warn('Falha ao detectar cidade da rota', shift.id, e);
+  }
+}
+
+async function resolveCitiesQueue(shifts) {
+  if (cityQueueRunning) return;
+  const pending = shifts.filter((s) => !s.city);
+  if (!pending.length) return;
+  cityQueueRunning = true;
+  for (const s of pending) {
+    await resolveCityForShift(s);
+    renderCityFilterOptions();
+    if (activeTab === 'history') renderHistoryList();
+    await new Promise((r) => setTimeout(r, 1100));
+  }
+  cityQueueRunning = false;
+}
+
+async function openProfile(driverId) {
+  clearHistoryLayer();
+  $modalOverlay.hidden = false;
+  $modalBody.innerHTML = '<p class="modal-msg">Carregando perfil…</p>';
+
+  const { data: stats, error: statsErr } = await sb
+    .from('driver_profile_stats').select('*').eq('driver_id', driverId).maybeSingle();
+  if (statsErr || !stats) {
+    $modalBody.innerHTML = `<p class="modal-msg"><b>Não foi possível carregar o perfil.</b><br>${statsErr?.message ?? 'Motorista não encontrado.'}<br><br>Se o erro mencionar "driver_profile_stats", rode <code>supabase/migration_02_perfil_rotas.sql</code> no SQL Editor do Supabase para habilitar o perfil.</p>`;
+    return;
+  }
+
+  const { data: shifts, error: shiftsErr } = await sb
+    .from('shifts')
+    .select('id, started_at, ended_at, distance_km, duration_min, avg_speed_kmh, stopped_min')
+    .eq('driver_id', driverId)
+    .order('started_at', { ascending: false })
+    .limit(30);
+
+  const phoneDigits = (stats.phone || '').replace(/\D/g, '');
+  const phoneFmt = phoneDigits.length === 11
+    ? `(${phoneDigits.slice(0, 2)}) ${phoneDigits.slice(2, 7)}-${phoneDigits.slice(7)}`
+    : stats.phone;
+
+  $modalBody.innerHTML = `
+    <h2 class="profile-name">${stats.name}</h2>
+    <p class="profile-phone">${phoneFmt}</p>
+    <a class="wa-btn" href="${waLink(stats.phone)}" target="_blank" rel="noopener">💬 Chamar no WhatsApp</a>
+    <div class="stats-grid">
+      <div class="stat-card"><div class="v">${stats.days_worked}</div><div class="l">dias trabalhados</div></div>
+      <div class="stat-card"><div class="v">${stats.total_shifts}</div><div class="l">jornadas concluídas</div></div>
+      <div class="stat-card"><div class="v">${Number(stats.total_km).toFixed(1)} km</div><div class="l">total percorrido</div></div>
+      <div class="stat-card"><div class="v">${Number(stats.avg_km_per_shift).toFixed(1)} km</div><div class="l">média por jornada</div></div>
+      <div class="stat-card"><div class="v">${stats.longest_shift_km != null ? Number(stats.longest_shift_km).toFixed(1) + ' km' : '—'}</div><div class="l">maior jornada (km)</div></div>
+      <div class="stat-card"><div class="v">${fmtMin(stats.longest_shift_min)}</div><div class="l">maior jornada (tempo)</div></div>
+    </div>
+    <h3 class="history-title">Rotas anteriores (clique para ver no mapa)</h3>
+    <div id="historyList"></div>`;
+
+  const $historyList = document.getElementById('historyList');
+  if (shiftsErr) {
+    $historyList.innerHTML = `<p class="modal-msg">Não foi possível carregar o histórico: ${shiftsErr.message}</p>`;
+    return;
+  }
+  if (!shifts.length) {
+    $historyList.innerHTML = '<p class="modal-msg">Nenhuma jornada registrada ainda.</p>';
+    return;
+  }
+  for (const s of shifts) {
+    const finished = !!s.ended_at;
+    const item = document.createElement('div');
+    item.className = 'history-item';
+    item.tabIndex = 0;
+    item.innerHTML = `
+      <span class="date">${fmtDate(s.started_at)}</span>
+      <span class="km">${s.distance_km != null ? Number(s.distance_km).toFixed(1) + ' km' : (finished ? '0 km' : 'em andamento')}</span>
+      <span class="sub">${finished ? `${fmtMin(s.duration_min)}${s.avg_speed_kmh != null ? ` · vel. média ${s.avg_speed_kmh} km/h` : ''}` : 'jornada em aberto'}</span>`;
+    item.onclick = () => loadShiftRoute(s.id);
+    item.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); loadShiftRoute(s.id); } };
+    $historyList.appendChild(item);
+  }
+}
+
+async function loadShiftRoute(shiftId) {
+  clearHistoryLayer();
+  const [{ data: pts, error: ptsErr }, { data: stops }] = await Promise.all([
+    sb.from('locations').select('lat, lng, recorded_at').eq('shift_id', shiftId).order('recorded_at'),
+    sb.from('stops').select('lat, lng, duration_min').eq('shift_id', shiftId),
+  ]);
+  if (ptsErr || !pts?.length) {
+    alert('Não foi possível carregar essa rota.');
+    return;
+  }
+  const latlngs = pts.map((p) => [p.lat, p.lng]);
+  const line = L.polyline(latlngs, { color: '#2B6CB0', weight: 4, opacity: 0.85 }).addTo(map);
+  const markers = [
+    L.circleMarker(latlngs[0], { radius: 7, color: '#2E7D32', fillColor: '#2E7D32', fillOpacity: 1 }).addTo(map).bindTooltip('Início'),
+    L.circleMarker(latlngs.at(-1), { radius: 7, color: '#C62828', fillColor: '#C62828', fillOpacity: 1 }).addTo(map).bindTooltip('Fim'),
+  ];
+  for (const s of stops ?? []) {
+    markers.push(
+      L.circleMarker([s.lat, s.lng], { radius: 6 + Math.min(s.duration_min / 5, 10), className: 'stop-dot' })
+        .addTo(map).bindTooltip(`Parado ${fmtMin(s.duration_min)}`)
+    );
+  }
+  historyLayer = { line, markers };
+  closeProfile();
+  map.fitBounds(latlngs, { padding: [60, 60], maxZoom: 16 });
+}
+
+function closeProfile() {
+  $modalOverlay.hidden = true;
+  $modalBody.innerHTML = '';
+}
+$modalClose.onclick = closeProfile;
+$modalOverlay.onclick = (ev) => { if (ev.target === $modalOverlay) closeProfile(); };
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && !$modalOverlay.hidden) closeProfile(); });
+
+// Reforço além do Realtime: o Realtime self-hosted às vezes trava a conexão
+// silenciosamente (sem disparar CLOSED), e o painel fica com o último ponto
+// recebido preso na tela mesmo com o motorista continuando a se mover.
+// Esta função busca no banco qualquer ponto/jornada que o Realtime tenha perdido.
+async function reconcile() {
+  const { data: shifts, error } = await sb
+    .from('shifts')
+    .select('id, started_at, driver:drivers(id, name, phone)')
+    .is('ended_at', null)
+    .order('started_at');
+  if (error) { console.warn('Reconciliação: falha ao listar jornadas', error.message); return; }
+
+  const openIds = new Set(shifts.map((s) => s.id));
+  for (const id of [...state.keys()]) {
+    if (!openIds.has(id)) removeShift(id);
+  }
+
+  for (const s of shifts) {
+    let e = state.get(s.id);
+    if (!e) {
+      upsertShift(s, []);
+      e = state.get(s.id);
+    }
+    const last = e.points.at(-1);
+    let q = sb.from('locations').select('lat, lng, recorded_at').eq('shift_id', s.id).order('recorded_at');
+    if (last) q = q.gt('recorded_at', last.recorded_at);
+    const { data: pts, error: ptsErr } = await q;
+    if (ptsErr) { console.warn('Reconciliação: falha ao buscar pontos', ptsErr.message); continue; }
+    for (const p of pts ?? []) addPoint(e, p, false);
+  }
+  render();
+}
+
+// Realtime: novas posições e jornadas abertas/encerradas
+sb.channel('live')
+  .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'locations' }, async ({ new: p }) => {
+    let e = state.get(p.shift_id);
+    if (!e) {
+      const { data: s } = await sb.from('shifts')
+        .select('id, started_at, ended_at, driver:drivers(id, name, phone)')
+        .eq('id', p.shift_id).single();
+      if (!s || s.ended_at) return;
+      upsertShift(s, []);
+      e = state.get(p.shift_id);
+    }
+    addPoint(e, p);
+  })
+  .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'shifts' }, ({ new: s }) => {
+    if (s.ended_at) { removeShift(s.id); loadDrivers(); loadHistory(); }
+  })
+  .subscribe((st, err) => {
+    const labels = { SUBSCRIBED: 'Ao vivo', CHANNEL_ERROR: 'Erro no realtime', TIMED_OUT: 'Sem resposta do realtime', CLOSED: 'Desconectado' };
+    $status.textContent = labels[st] || 'Reconectando';
+    $status.classList.toggle('live', st === 'SUBSCRIBED');
+    if (err) console.error('Realtime:', err);
+  });
+
+setInterval(render, 30000);      // atualiza "há X min" e o alerta de sinal parado
+setInterval(reconcile, 20000);   // rede de segurança caso o Realtime trave
+setInterval(loadDrivers, 60000); // mantém a aba "Motoristas" e as estatísticas atualizadas
+setInterval(loadHistory, 60000); // mantém a aba "Histórico" atualizada
+loadActive();
+loadDrivers();
+loadHistory();
+</script>
+</body>
+</html>
