@@ -754,9 +754,11 @@ function renderCoverageGrid(points) {
 
 // ---------- Rotas coloridas por colaborador: todas as rotas de uma cidade/dia de uma vez ----------
 
+// Sem laranja/marrom/vermelho: são as cores das ruas no mapa e do "sem
+// cobertura" na grade — misturava e ficava difícil de distinguir.
 const DRIVER_PALETTE = [
-  '#1E88E5', '#FDD835', '#43A047', '#E53935', '#8E24AA', '#FB8C00',
-  '#00ACC1', '#6D4C41', '#D81B60', '#3949AB', '#7CB342', '#F4511E',
+  '#1E88E5', '#FDD835', '#43A047', '#8E24AA', '#00ACC1',
+  '#D81B60', '#3949AB', '#7CB342', '#00897B', '#5E35B1',
 ];
 
 function colorForDriver(driverId) {
