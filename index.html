@@ -606,15 +606,25 @@ function renderHistoryList() {
   }
 }
 
-// Entrega é porta a porta, a pé — acima disso, sustentado, só dá pra ser de carro/moto.
-const CAR_SPEED_THRESHOLD_KMH = 9;
+// Entrega é porta a porta, a pé, com muitas paradas — acima disso, sustentado
+// (distância total ÷ tempo total, contando as paradas), só dá pra ser de carro/moto.
+// Não usamos avg_speed_kmh puro pra essa decisão: aquele número já ignora os
+// momentos parado/devagar, então fica artificialmente alto mesmo andando a pé.
+const CAR_PACE_THRESHOLD_KMH = 6;
+
+function overallPaceKmh(shift) {
+  if (shift.distance_km == null || !shift.duration_min) return null;
+  return Number((shift.distance_km / (shift.duration_min / 60)).toFixed(1));
+}
 
 function speedPopupHtml(shift) {
   const avg = shift.avg_speed_kmh, max = shift.max_speed_kmh;
-  const suspect = avg != null && avg > CAR_SPEED_THRESHOLD_KMH;
+  const pace = overallPaceKmh(shift);
+  const suspect = pace != null && pace > CAR_PACE_THRESHOLD_KMH;
   return `
     <b>${shift.driver?.name ?? 'Motorista removido'}</b><br>
-    Velocidade média: ${avg != null ? avg + ' km/h' : '—'}<br>
+    Ritmo geral (distância ÷ tempo total): ${pace != null ? pace + ' km/h' : '—'}<br>
+    Velocidade média em movimento: ${avg != null ? avg + ' km/h' : '—'}<br>
     Velocidade máxima: ${max != null ? max + ' km/h' : '—'}
     ${suspect ? '<br><b style="color:#C62828">⚠️ Ritmo rápido demais pra ser a pé</b>' : ''}
   `;
@@ -634,11 +644,12 @@ async function showHistoryRoute(shift) {
     .bindTooltip(shift.driver?.name ?? 'Motorista removido', { sticky: true, className: 'label' })
     .bindPopup(speedPopupHtml(shift))
     .openPopup();
-  if (shift.avg_speed_kmh != null && shift.avg_speed_kmh > CAR_SPEED_THRESHOLD_KMH) {
+  const pace = overallPaceKmh(shift);
+  if (pace != null && pace > CAR_PACE_THRESHOLD_KMH) {
     alert(
-      `⚠️ Atenção: ${shift.driver?.name ?? 'esse motorista'} manteve uma velocidade média de ` +
-      `${shift.avg_speed_kmh} km/h nessa rota — rápido demais pra entrega porta a porta a pé. ` +
-      `Pode ter sido feita de carro/moto.`
+      `⚠️ Atenção: ${shift.driver?.name ?? 'esse motorista'} manteve um ritmo de ${pace} km/h ` +
+      `(distância ÷ tempo total) nessa rota — rápido demais pra entrega porta a porta a pé. ` +
+      `Pode ter sido feita de carro/moto, ou pode ter sido um erro de GPS — vale confirmar com a pessoa.`
     );
   }
   const markers = [
@@ -702,12 +713,40 @@ function clearCoverageLayer() {
   $coverageLegend.hidden = true;
 }
 
+// Busca TODOS os pontos de GPS de uma lista de jornadas, sem cortar nada —
+// pagina em blocos (.range) dentro de cada grupo de 100 shift_ids, em vez de
+// um único .limit() que, com muitos dados, cortava resultado sem avisar.
+const LOCATIONS_PAGE = 5000;
+const LOCATIONS_HARD_CAP = 150000; // trava de segurança pra não travar o navegador
+
+async function fetchAllLocationsForShifts(shiftIds, selectFields) {
+  const all = [];
+  const CHUNK = 100;
+  for (let i = 0; i < shiftIds.length; i += CHUNK) {
+    const idsChunk = shiftIds.slice(i, i + CHUNK);
+    let from = 0;
+    while (true) {
+      const { data, error } = await sb
+        .from('locations').select(selectFields).in('shift_id', idsChunk)
+        .order('recorded_at')
+        .range(from, from + LOCATIONS_PAGE - 1);
+      if (error) throw error;
+      all.push(...(data ?? []));
+      if (all.length >= LOCATIONS_HARD_CAP) return { points: all, truncated: true };
+      if (!data || data.length < LOCATIONS_PAGE) break;
+      from += LOCATIONS_PAGE;
+    }
+  }
+  return { points: all, truncated: false };
+}
+
 async function showCoverage() {
   if (!historyFilters.city) return;
   clearHistoryLayer();
   clearCoverageLayer();
   clearDriverRoutesLayer();
   $coverageBtn.disabled = true;
+  $byDriverBtn.disabled = true;
   const originalLabel = $coverageBtn.textContent;
   $coverageBtn.textContent = 'Calculando cobertura…';
 
@@ -721,15 +760,9 @@ async function showCoverage() {
     if (!shiftRows?.length) { alert('Nenhuma rota encontrada com esse filtro.'); return; }
 
     const ids = shiftRows.map((s) => s.id);
-    const points = [];
-    const CHUNK = 100; // evita mandar uma URL gigante com IDs demais de uma vez
-    for (let i = 0; i < ids.length; i += CHUNK) {
-      const { data: pts, error: ptsErr } = await sb
-        .from('locations').select('lat, lng').in('shift_id', ids.slice(i, i + CHUNK)).limit(20000);
-      if (ptsErr) throw ptsErr;
-      points.push(...(pts ?? []));
-    }
+    const { points, truncated } = await fetchAllLocationsForShifts(ids, 'lat, lng');
     if (!points.length) { alert('Essas rotas não têm pontos de GPS gravados.'); return; }
+    if (truncated) alert('Muitos dados de uma vez — considere filtrar por um dia específico pra um resultado mais preciso.');
 
     renderCoverageGrid(points);
   } catch (e) {
@@ -737,6 +770,7 @@ async function showCoverage() {
     alert('Não foi possível calcular a cobertura: ' + e.message);
   } finally {
     $coverageBtn.disabled = !historyFilters.city;
+    $byDriverBtn.disabled = !historyFilters.city;
     $coverageBtn.textContent = originalLabel;
   }
 }
@@ -763,7 +797,7 @@ function renderCoverageGrid(points) {
   const xMin = Math.floor((minLng - padLng) / cellLng), xMax = Math.floor((maxLng + padLng) / cellLng);
 
   const totalCells = (yMax - yMin + 1) * (xMax - xMin + 1);
-  if (totalCells > 20000) {
+  if (totalCells > 6000) {
     alert('A área é grande demais pra desenhar a grade (tente filtrar por um dia específico).');
     return;
   }
@@ -787,7 +821,7 @@ function renderCoverageGrid(points) {
 
   $coverageLegend.hidden = false;
   const pct = Math.round((coveredCount / totalCells) * 100);
-  $coverageLegend.querySelector('span').innerHTML = `<i style="background:#2E7D3299"></i> coberto (${pct}% da área analisada)`;
+  $coverageLegend.querySelector('span').innerHTML = `<i style="background:#2E7D3299"></i> coberto (${pct}% do retângulo em volta das rotas — não é % da cidade toda)`;
   map.fitBounds([[minLat - padLat, minLng - padLng], [maxLat + padLat, maxLng + padLng]], { padding: [40, 40] });
 }
 
@@ -819,13 +853,14 @@ async function showRoutesByDriver() {
   clearHistoryLayer();
   clearCoverageLayer();
   clearDriverRoutesLayer();
+  $coverageBtn.disabled = true;
   $byDriverBtn.disabled = true;
   const originalLabel = $byDriverBtn.textContent;
   $byDriverBtn.textContent = 'Carregando rotas…';
 
   try {
     let shiftsQuery = sb.from('shifts')
-      .select('id, distance_km, avg_speed_kmh, max_speed_kmh, driver:drivers(id, name)')
+      .select('id, distance_km, duration_min, avg_speed_kmh, max_speed_kmh, driver:drivers(id, name)')
       .eq('city', historyFilters.city).not('ended_at', 'is', null);
     if (historyFilters.date) {
       shiftsQuery = shiftsQuery.gte('started_at', `${historyFilters.date}T00:00:00`).lte('started_at', `${historyFilters.date}T23:59:59.999`);
@@ -836,13 +871,9 @@ async function showRoutesByDriver() {
 
     const ids = shiftRows.map((s) => s.id);
     const pointsByShift = new Map(ids.map((id) => [id, []]));
-    const CHUNK = 100;
-    for (let i = 0; i < ids.length; i += CHUNK) {
-      const { data: pts, error: ptsErr } = await sb
-        .from('locations').select('shift_id, lat, lng').in('shift_id', ids.slice(i, i + CHUNK)).order('recorded_at').limit(20000);
-      if (ptsErr) throw ptsErr;
-      for (const p of pts ?? []) pointsByShift.get(p.shift_id)?.push([p.lat, p.lng]);
-    }
+    const { points: allPts, truncated } = await fetchAllLocationsForShifts(ids, 'shift_id, lat, lng');
+    for (const p of allPts) pointsByShift.get(p.shift_id)?.push([p.lat, p.lng]);
+    if (truncated) alert('Muitos dados de uma vez — considere filtrar por um dia específico.');
 
     driverRoutesLayer = L.layerGroup().addTo(map);
     const allLatLngs = [];
@@ -853,7 +884,7 @@ async function showRoutesByDriver() {
       const driverId = s.driver?.id ?? 'sem-motorista';
       const driverName = s.driver?.name ?? 'Motorista removido';
       const color = colorForDriver(driverId);
-      const suspect = s.avg_speed_kmh != null && s.avg_speed_kmh > CAR_SPEED_THRESHOLD_KMH;
+      const suspect = overallPaceKmh(s) != null && overallPaceKmh(s) > CAR_PACE_THRESHOLD_KMH;
       L.polyline(latlngs, { color, weight: 4, opacity: 0.75, dashArray: suspect ? '2, 8' : null })
         .addTo(driverRoutesLayer)
         .bindTooltip(driverName + (suspect ? ' ⚠️' : ''), { sticky: true, className: 'label' })
@@ -878,6 +909,7 @@ async function showRoutesByDriver() {
     console.error('Falha ao carregar rotas por colaborador', e);
     alert('Não foi possível carregar as rotas: ' + e.message);
   } finally {
+    $coverageBtn.disabled = !historyFilters.city;
     $byDriverBtn.disabled = !historyFilters.city;
     $byDriverBtn.textContent = originalLabel;
   }
