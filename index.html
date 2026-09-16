@@ -317,6 +317,19 @@ function distanceKm(points) {
 function fmtDate(ts) {
   return new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
+// "Hoje" e os filtros de data usam sempre o dia LOCAL do navegador — antes
+// misturava UTC num lugar e local em outro, e depois das 21h (Brasil é
+// UTC-3) o botão "Hoje" e os filtros de cidade passavam a apontar pra dias
+// diferentes entre si.
+function localDateStr(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function localDayRangeISO(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const start = new Date(y, m - 1, d, 0, 0, 0, 0);
+  const end = new Date(y, m - 1, d, 23, 59, 59, 999);
+  return { startISO: start.toISOString(), endISO: end.toISOString() };
+}
 function fmtMin(min) {
   if (min == null) return '—';
   const h = Math.floor(min / 60), m = Math.round(min % 60);
@@ -493,7 +506,7 @@ function updateCoverageButton() {
 $filterDate.onchange = () => { historyFilters.date = $filterDate.value; renderHistoryList(); updateCoverageButton(); };
 $filterCity.onchange = () => { historyFilters.city = $filterCity.value; renderHistoryList(); updateCoverageButton(); };
 $filterToday.onclick = () => {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateStr();
   $filterDate.value = historyFilters.date === today ? '' : today;
   historyFilters.date = $filterDate.value;
   renderHistoryList();
@@ -668,28 +681,40 @@ async function showHistoryRoute(shift) {
   map.fitBounds(latlngs, { padding: [60, 60], maxZoom: 16 });
 }
 
-// Detecta a cidade de uma jornada pelo primeiro ponto de GPS (Nominatim/OSM) e
-// grava no banco pra não precisar buscar de novo. Roda devagar (1 por segundo)
-// pra respeitar o limite de uso gratuito do serviço.
+// Detecta a cidade de uma jornada por um ponto de GPS (Nominatim/OSM) e grava
+// no banco pra não precisar buscar de novo. Roda devagar (1 por segundo) pra
+// respeitar o limite de uso gratuito do serviço.
+//
+// Usa o primeiro ponto com precisão razoável entre os 5 iniciais — o ponto
+// bem inicial (tocado o Start, geralmente dentro de casa/escritório) costuma
+// vir com o GPS ainda impreciso e pode grudar a rota inteira na cidade errada.
+const citySkip = new Set();      // jornadas que já falharam — não tenta de novo na mesma sessão
+const resolvingCityIds = new Set(); // jornadas em que ESTA aba está gravando a cidade agora
+
 async function resolveCityForShift(shift) {
-  const { data: pt } = await sb
-    .from('locations').select('lat, lng').eq('shift_id', shift.id).order('recorded_at').limit(1).maybeSingle();
-  if (!pt) return;
+  const { data: pts } = await sb
+    .from('locations').select('lat, lng, accuracy_m').eq('shift_id', shift.id).order('recorded_at').limit(5);
+  const pt = pts?.find((p) => p.accuracy_m == null || p.accuracy_m <= 50) ?? pts?.[0];
+  if (!pt) { citySkip.add(shift.id); return; }
   try {
     const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${pt.lat}&lon=${pt.lng}&zoom=10&addressdetails=1`);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     const city = data?.address?.city || data?.address?.town || data?.address?.village || data?.address?.municipality || null;
-    if (!city) return;
+    if (!city) { citySkip.add(shift.id); return; }
+    resolvingCityIds.add(shift.id);
     const { error } = await sb.from('shifts').update({ city }).eq('id', shift.id);
     if (!error) { shift.city = city; citySet.add(city); }
+    else citySkip.add(shift.id);
   } catch (e) {
     console.warn('Falha ao detectar cidade da rota', shift.id, e);
+    citySkip.add(shift.id);
   }
 }
 
 async function resolveCitiesQueue(shifts) {
   if (cityQueueRunning) return;
-  const pending = shifts.filter((s) => !s.city);
+  const pending = shifts.filter((s) => !s.city && !citySkip.has(s.id));
   if (!pending.length) return;
   cityQueueRunning = true;
   for (const s of pending) {
@@ -753,7 +778,8 @@ async function showCoverage() {
   try {
     let shiftsQuery = sb.from('shifts').select('id').eq('city', historyFilters.city).not('ended_at', 'is', null);
     if (historyFilters.date) {
-      shiftsQuery = shiftsQuery.gte('started_at', `${historyFilters.date}T00:00:00`).lte('started_at', `${historyFilters.date}T23:59:59.999`);
+      const { startISO, endISO } = localDayRangeISO(historyFilters.date);
+      shiftsQuery = shiftsQuery.gte('started_at', startISO).lte('started_at', endISO);
     }
     const { data: shiftRows, error: shiftsErr } = await shiftsQuery.limit(500);
     if (shiftsErr) throw shiftsErr;
@@ -863,7 +889,8 @@ async function showRoutesByDriver() {
       .select('id, distance_km, duration_min, avg_speed_kmh, max_speed_kmh, driver:drivers(id, name)')
       .eq('city', historyFilters.city).not('ended_at', 'is', null);
     if (historyFilters.date) {
-      shiftsQuery = shiftsQuery.gte('started_at', `${historyFilters.date}T00:00:00`).lte('started_at', `${historyFilters.date}T23:59:59.999`);
+      const { startISO, endISO } = localDayRangeISO(historyFilters.date);
+      shiftsQuery = shiftsQuery.gte('started_at', startISO).lte('started_at', endISO);
     }
     const { data: shiftRows, error: shiftsErr } = await shiftsQuery.limit(300);
     if (shiftsErr) throw shiftsErr;
@@ -1067,8 +1094,10 @@ async function announceShiftStart(shift, point) {
   let cityLabel = '';
   try {
     const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${point.lat}&lon=${point.lng}&zoom=10&addressdetails=1`);
-    const data = await res.json();
-    cityLabel = data?.address?.city || data?.address?.town || data?.address?.village || data?.address?.municipality || '';
+    if (res.ok) {
+      const data = await res.json();
+      cityLabel = data?.address?.city || data?.address?.town || data?.address?.village || data?.address?.municipality || '';
+    }
   } catch { /* sem cidade, mostra só nome e horário */ }
   showToast(`🚶 <b>${name}</b> iniciou jornada${cityLabel ? ' em <b>' + cityLabel + '</b>' : ''} às ${time}`);
 }
@@ -1089,6 +1118,10 @@ sb.channel('live')
     addPoint(e, p);
   })
   .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'shifts' }, ({ new: s }) => {
+    // Se essa atualização foi a gente mesmo gravando a cidade detectada,
+    // ignora — senão recarrega tudo (motoristas + histórico) a cada cidade
+    // resolvida, o que é lento e desnecessário pra uma mudança tão pequena.
+    if (resolvingCityIds.has(s.id)) { resolvingCityIds.delete(s.id); return; }
     if (s.ended_at) { removeShift(s.id); loadDrivers(); loadHistory(); }
   })
   .subscribe((st, err) => {
