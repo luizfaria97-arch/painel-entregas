@@ -190,6 +190,7 @@
   }
   .toast.out { animation: toast-out .25s ease-in forwards; }
   .toast b { color: var(--orange); }
+  .toast.finish { border-left: 4px solid var(--orange); }
   @keyframes toast-in { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
   @keyframes toast-out { from { opacity: 1; } to { opacity: 0; transform: translateX(20px); } }
 </style>
@@ -280,6 +281,10 @@ const $byDriverBtn = document.getElementById('byDriverBtn');
 const $driverLegend = document.getElementById('driverLegend');
 let coverageLayer = null;      // grupo de retângulos da grade de cobertura
 let driverRoutesLayer = null;  // grupo de rotas coloridas por colaborador
+// Evita aviso duplicado se o Realtime reconectar e reenviar eventos antigos
+// (o self-hosted às vezes faz isso) — cada jornada só anuncia início/fim uma vez.
+const announcedStartIds = new Set();
+const announcedFinishIds = new Set();
 const $modalOverlay = document.getElementById('modalOverlay');
 const $modalBody = document.getElementById('modalBody');
 const $modalClose = document.getElementById('modalClose');
@@ -1073,13 +1078,13 @@ async function reconcile() {
   render();
 }
 
-// ---------- Aviso de jornada iniciada (toast no canto, não trava a tela) ----------
+// ---------- Aviso de jornada iniciada/encerrada (toast no canto + som) ----------
 
 const $toastContainer = document.getElementById('toastContainer');
 
-function showToast(html, ms = 9000) {
+function showToast(html, ms = 9000, extraClass = '') {
   const el = document.createElement('div');
-  el.className = 'toast';
+  el.className = 'toast' + (extraClass ? ' ' + extraClass : '');
   el.innerHTML = html;
   $toastContainer.appendChild(el);
   setTimeout(() => {
@@ -1088,18 +1093,63 @@ function showToast(html, ms = 9000) {
   }, ms);
 }
 
+// Som sintetizado (sem depender de arquivo de áudio nenhum). Navegadores só
+// deixam tocar som depois de alguma interação do usuário na página (política
+// de autoplay) — o primeiro aviso pode vir mudo até alguém clicar em algo.
+let audioCtx = null;
+function playNotificationSound(kind = 'start') {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const notes = kind === 'finish' ? [660, 880] : [880];
+    let t = audioCtx.currentTime;
+    for (const freq of notes) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(t);
+      osc.stop(t + 0.3);
+      t += 0.15;
+    }
+  } catch (e) {
+    console.warn('Não foi possível tocar o som de notificação', e);
+  }
+}
+
+async function reverseGeocodeCity(lat, lng) {
+  try {
+    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lng}&zoom=10&addressdetails=1`);
+    if (!res.ok) return '';
+    const data = await res.json();
+    return data?.address?.city || data?.address?.town || data?.address?.village || data?.address?.municipality || '';
+  } catch {
+    return '';
+  }
+}
+
 async function announceShiftStart(shift, point) {
   const time = new Date(shift.started_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
   const name = shift.driver?.name ?? 'Um motorista';
-  let cityLabel = '';
-  try {
-    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${point.lat}&lon=${point.lng}&zoom=10&addressdetails=1`);
-    if (res.ok) {
-      const data = await res.json();
-      cityLabel = data?.address?.city || data?.address?.town || data?.address?.village || data?.address?.municipality || '';
-    }
-  } catch { /* sem cidade, mostra só nome e horário */ }
+  const cityLabel = await reverseGeocodeCity(point.lat, point.lng);
   showToast(`🚶 <b>${name}</b> iniciou jornada${cityLabel ? ' em <b>' + cityLabel + '</b>' : ''} às ${time}`);
+  playNotificationSound('start');
+}
+
+function announceShiftFinish(shift, driverName) {
+  const time = new Date(shift.ended_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  const km = shift.distance_km != null ? Number(shift.distance_km).toFixed(1) + ' km' : '— km';
+  const dur = shift.duration_min != null ? fmtMin(shift.duration_min) : '—';
+  showToast(
+    `🏁 <b>${driverName}</b> encerrou a jornada às ${time}${shift.city ? ' · <b>' + shift.city + '</b>' : ''}<br>` +
+    `${km} percorridos · ${dur} de jornada`,
+    30000,
+    'finish'
+  );
+  playNotificationSound('finish');
 }
 
 // Realtime: novas posições e jornadas abertas/encerradas
@@ -1113,7 +1163,7 @@ sb.channel('live')
       if (!s || s.ended_at) return;
       upsertShift(s, []);
       e = state.get(p.shift_id);
-      announceShiftStart(s, p);
+      if (!announcedStartIds.has(s.id)) { announcedStartIds.add(s.id); announceShiftStart(s, p); }
     }
     addPoint(e, p);
   })
@@ -1122,7 +1172,13 @@ sb.channel('live')
     // ignora — senão recarrega tudo (motoristas + histórico) a cada cidade
     // resolvida, o que é lento e desnecessário pra uma mudança tão pequena.
     if (resolvingCityIds.has(s.id)) { resolvingCityIds.delete(s.id); return; }
-    if (s.ended_at) { removeShift(s.id); loadDrivers(); loadHistory(); }
+    if (s.ended_at) {
+      const driverName = state.get(s.id)?.driver?.name ?? 'Um motorista';
+      removeShift(s.id);
+      loadDrivers();
+      loadHistory();
+      if (!announcedFinishIds.has(s.id)) { announcedFinishIds.add(s.id); announceShiftFinish(s, driverName); }
+    }
   })
   .subscribe((st, err) => {
     const labels = { SUBSCRIBED: 'Ao vivo', CHANNEL_ERROR: 'Erro no realtime', TIMED_OUT: 'Sem resposta do realtime', CLOSED: 'Desconectado' };
