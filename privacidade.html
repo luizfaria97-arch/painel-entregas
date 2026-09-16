@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Safe-letter — Política de Privacidade</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --asphalt: #2B2D30;
+    --paper: #F5F3EE;
+    --line: #DED9CE;
+    --orange: #FF6A1F;
+    --muted: #56585C;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: 'Barlow', system-ui, sans-serif; color: var(--asphalt);
+    background: var(--paper); line-height: 1.6;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 48px 24px 80px; }
+  h1 { font-size: 30px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 4px; }
+  .updated { color: var(--muted); font-size: 14px; margin-bottom: 40px; }
+  h2 { font-size: 19px; font-weight: 700; margin-top: 36px; margin-bottom: 10px; }
+  p, li { font-size: 16px; color: #2B2D30; }
+  ul { padding-left: 22px; }
+  li { margin-bottom: 6px; }
+  .box {
+    background: #fff; border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px 20px; margin: 20px 0;
+  }
+  a { color: var(--orange); }
+  .contact {
+    background: var(--asphalt); color: #fff; border-radius: 12px; padding: 20px 24px; margin-top: 40px;
+  }
+  .contact a { color: #FFB088; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Política de Privacidade — Safe-letter</h1>
+  <p class="updated">Última atualização: 17 de setembro de 2026</p>
+
+  <p>O aplicativo <b>Safe-letter</b> é uma ferramenta de uso interno para equipes de campo, usada para
+  registrar o percurso de entregas/distribuição feitas por colaboradores autorizados. Esta política explica
+  quais informações o app coleta, para que servem, e como são protegidas.</p>
+
+  <h2>Quem pode usar o app</h2>
+  <p>O Safe-letter não é destinado ao público geral. É distribuído apenas para colaboradores autorizados da
+  nossa organização, para uso durante o horário e as atividades de trabalho.</p>
+
+  <h2>Quais dados coletamos</h2>
+  <div class="box">
+    <ul>
+      <li><b>Nome e telefone</b> — informados pelo próprio colaborador no cadastro, uma única vez.</li>
+      <li><b>Localização (GPS)</b> — incluindo em segundo plano, enquanto uma jornada de trabalho está ativa
+        (do momento em que o colaborador toca em "Start" até tocar em "Finish"). A localização é registrada
+        a cada 15 segundos ou 25 metros percorridos.</li>
+    </ul>
+  </div>
+  <p>O app <b>não</b> coleta contatos, fotos, mensagens, histórico de navegação, nem qualquer outro dado do
+  aparelho além do listado acima.</p>
+
+  <h2>Por que coletamos a localização</h2>
+  <p>A localização é usada exclusivamente para:</p>
+  <ul>
+    <li>Registrar o percurso feito durante a jornada de trabalho (rota, distância, duração);</li>
+    <li>Permitir que o responsável acompanhe a cobertura do território em tempo real, num painel interno;</li>
+    <li>Gerar estatísticas de trabalho (km percorridos, dias trabalhados) para o próprio colaborador e para o
+      responsável pela equipe.</li>
+  </ul>
+  <p>O rastreamento em segundo plano só acontece enquanto a jornada está aberta. Ao tocar em "Finish", o
+  registro é encerrado imediatamente.</p>
+
+  <h2>Com quem compartilhamos dados</h2>
+  <p>Não vendemos nem compartilhamos dados pessoais com terceiros para fins de publicidade. As únicas
+  exceções técnicas são:</p>
+  <ul>
+    <li>Nosso próprio servidor de banco de dados (infraestrutura que controlamos), onde os dados ficam
+      armazenados;</li>
+    <li>Um serviço público de geolocalização (OpenStreetMap/Nominatim), usado apenas para identificar em qual
+      cidade uma rota foi feita — recebe somente coordenadas geográficas, nunca nome, telefone ou qualquer
+      identificação da pessoa.</li>
+  </ul>
+
+  <h2>Por quanto tempo guardamos os dados</h2>
+  <p>Os dados de cadastro e de rotas ficam armazenados enquanto o colaborador estiver ativo na equipe e pelo
+  tempo necessário para fins operacionais e de prestação de contas internas. Podem ser apagados a pedido do
+  colaborador (veja "Seus direitos" abaixo).</p>
+
+  <h2>Segurança</h2>
+  <p>O acesso ao painel administrativo é restrito à equipe responsável. As permissões de acesso ao banco de
+  dados são limitadas às operações estritamente necessárias para o funcionamento do app (não é possível, por
+  exemplo, apagar registros por fora dos fluxos controlados do sistema).</p>
+
+  <h2>Permissão de localização em segundo plano</h2>
+  <p>O Android exige um aviso específico sobre isso: o Safe-letter pede acesso à localização "o tempo todo"
+  porque essa é a função central do app — sem isso, não é possível registrar o percurso de uma entrega
+  enquanto a tela do celular está bloqueada ou o app está minimizado, o que é comum durante uma jornada de
+  trabalho de várias horas.</p>
+
+  <h2>Seus direitos</h2>
+  <p>Qualquer colaborador pode solicitar, a qualquer momento:</p>
+  <ul>
+    <li>Acesso aos próprios dados registrados;</li>
+    <li>Correção de nome ou telefone cadastrados incorretamente;</li>
+    <li>Exclusão do próprio cadastro e histórico de rotas.</li>
+  </ul>
+  <p>Para isso, basta entrar em contato pelo canal abaixo.</p>
+
+  <div class="contact">
+    <b>Contato</b><br>
+    Dúvidas sobre esta política ou sobre seus dados: <a href="mailto:equipe.evandroroman@gmail.com">equipe.evandroroman@gmail.com</a>
+  </div>
+</div>
+</body>
+</html>
