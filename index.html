@@ -178,6 +178,20 @@
   .coverage-legend span { display: inline-flex; align-items: center; gap: 5px; }
   .coverage-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
   .coverage-legend .close-btn { width: auto; flex: 0; background: none; color: var(--asphalt); border: 1px solid var(--line); padding: 4px 10px; font-weight: 600; border-radius: 8px; cursor: pointer; }
+
+  .toast-container {
+    position: fixed; top: 16px; right: 16px; z-index: 2000;
+    display: flex; flex-direction: column; gap: 8px; max-width: 320px;
+  }
+  .toast {
+    background: var(--asphalt); color: #fff; padding: 12px 16px; border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.35); font-size: 14px; line-height: 1.4;
+    animation: toast-in .25s ease-out;
+  }
+  .toast.out { animation: toast-out .25s ease-in forwards; }
+  .toast b { color: var(--orange); }
+  @keyframes toast-in { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+  @keyframes toast-out { from { opacity: 1; } to { opacity: 0; transform: translateX(20px); } }
 </style>
 </head>
 <body>
@@ -210,6 +224,8 @@
   <ul id="list"></ul>
 </aside>
 <div id="map" role="region" aria-label="Mapa dos entregadores"></div>
+
+<div class="toast-container" id="toastContainer"></div>
 
 <div class="modal-overlay" id="modalOverlay" hidden>
   <div class="modal" role="dialog" aria-modal="true">
@@ -998,6 +1014,33 @@ async function reconcile() {
   render();
 }
 
+// ---------- Aviso de jornada iniciada (toast no canto, não trava a tela) ----------
+
+const $toastContainer = document.getElementById('toastContainer');
+
+function showToast(html, ms = 9000) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.innerHTML = html;
+  $toastContainer.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 250);
+  }, ms);
+}
+
+async function announceShiftStart(shift, point) {
+  const time = new Date(shift.started_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  const name = shift.driver?.name ?? 'Um motorista';
+  let cityLabel = '';
+  try {
+    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${point.lat}&lon=${point.lng}&zoom=10&addressdetails=1`);
+    const data = await res.json();
+    cityLabel = data?.address?.city || data?.address?.town || data?.address?.village || data?.address?.municipality || '';
+  } catch { /* sem cidade, mostra só nome e horário */ }
+  showToast(`🚶 <b>${name}</b> iniciou jornada${cityLabel ? ' em <b>' + cityLabel + '</b>' : ''} às ${time}`);
+}
+
 // Realtime: novas posições e jornadas abertas/encerradas
 sb.channel('live')
   .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'locations' }, async ({ new: p }) => {
@@ -1009,6 +1052,7 @@ sb.channel('live')
       if (!s || s.ended_at) return;
       upsertShift(s, []);
       e = state.get(p.shift_id);
+      announceShiftStart(s, p);
     }
     addPoint(e, p);
   })
